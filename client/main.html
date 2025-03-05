@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Real-Time Object Detection</title>
+        <style>
+            body {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                font-family: Arial, sans-serif;
+            }
+            #videoContainer {
+                position: relative;
+                width: 100%;
+                max-width: 640px;
+            }
+            #video {
+                width: 100%;
+                height: auto;
+            }
+            #overlay {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                pointer-events: none;
+            }
+            #status {
+                margin-top: 10px;
+                font-size: 16px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Real-Time Object Detection</h1>
+        <div id="videoContainer">
+            <video id="video" autoplay playsinline></video>
+            <canvas id="overlay"></canvas>
+        </div>
+        <p id="status">Connecting to server...</p>
+
+        <!-- Include Socket.IO client library (assumes server uses Socket.IO) -->
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+        <script>
+            // WebSocket connection to the server (adjust URL as needed)
+            const socket = io("http://localhost:5000");
+
+            // DOM elements
+            const video = document.getElementById("video");
+            const overlay = document.getElementById("overlay");
+            const status = document.getElementById("status");
+            const ctx = overlay.getContext("2d");
+
+            // Frame counter for synchronization
+            let frameId = 0;
+
+            // Set canvas size to match video
+            function resizeCanvas() {
+                overlay.width = video.videoWidth;
+                overlay.height = video.videoHeight;
+            }
+
+            // Access the camera
+            async function startCamera() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: "environment" }, // Use rear camera
+                    });
+                    video.srcObject = stream;
+                    video.onloadedmetadata = () => {
+                        resizeCanvas();
+                        sendFrames();
+                    };
+                } catch (err) {
+                    status.textContent =
+                        "Error accessing camera: " + err.message;
+                }
+            }
+
+            // Capture and send frames to the server
+            const hiddenCanvas = document.createElement("canvas");
+            const hiddenCtx = hiddenCanvas.getContext("2d");
+            function sendFrames() {
+                if (!video.videoWidth || !video.videoHeight) {
+                    requestAnimationFrame(sendFrames);
+                    return;
+                }
+
+                // Set hidden canvas size to match video
+                hiddenCanvas.width = video.videoWidth;
+                hiddenCanvas.height = video.videoHeight;
+
+                // Draw video frame to hidden canvas
+                hiddenCtx.drawImage(
+                    video,
+                    0,
+                    0,
+                    video.videoWidth,
+                    video.videoHeight,
+                );
+
+                // Convert to base64
+                const imageData = hiddenCanvas.toDataURL("image/jpeg", 0.8); // 80% quality
+                socket.emit("frame", { id: frameId++, data: imageData });
+
+                // Continue capturing frames
+                requestAnimationFrame(sendFrames);
+            }
+
+            // WebSocket event handlers
+            socket.on("connect", () => {
+                status.textContent = "Connected to server. Starting camera...";
+                startCamera();
+            });
+
+            socket.on("disconnect", () => {
+                status.textContent = "Disconnected from server.";
+            });
+
+            socket.on("detection", (data) => {
+                // Clear previous overlays
+                ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+                // Draw detections for the matching frame
+                if (data.detections && data.id !== undefined) {
+                    data.detections.forEach((det) => {
+                        const [x, y, width, height] = det.box;
+                        const label = det.label;
+
+                        // Draw bounding box
+                        ctx.strokeStyle = "red";
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(x, y, width, height);
+
+                        // Draw label
+                        ctx.fillStyle = "red";
+                        ctx.font = "16px Arial";
+                        ctx.fillText(label, x, y - 5);
+                    });
+                }
+            });
+
+            socket.on("error", (err) => {
+                status.textContent = "Server error: " + err.message;
+            });
+        </script>
+    </body>
+</html>
