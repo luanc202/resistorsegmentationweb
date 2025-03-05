@@ -3,7 +3,7 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Single Image Object Detection</title>
+        <title>Segmentador de Resistores e Faixas</title>
         <style>
             body {
                 display: flex;
@@ -19,6 +19,7 @@
             #image {
                 width: 100%;
                 height: auto;
+                display: none; /* Initially hidden */
             }
             #status {
                 margin-top: 10px;
@@ -32,7 +33,7 @@
         </style>
     </head>
     <body>
-        <h1>Single Image Object Detection</h1>
+        <h1>Segmentador de Resistores e Faixas</h1>
         <input
             type="file"
             id="imageInput"
@@ -40,9 +41,9 @@
             capture="environment"
         />
         <div id="imageContainer">
-            <img id="image" src="" alt="Captured Image" />
+            <img id="image" src="" alt="Imagem anotada" />
         </div>
-        <p id="status">Ready to capture image.</p>
+        <p id="status">Pronto para tirar foto.</p>
 
         <script>
             const imageInput = document.getElementById("imageInput");
@@ -54,11 +55,15 @@
                     status.textContent = "Processing image...";
                     const file = imageInput.files[0];
 
-                    // Display the original image
+                    // Hide the image initially
+                    image.style.display = "none";
+
+                    // Display the original image temporarily
                     const url = URL.createObjectURL(file);
                     image.src = url;
                     image.onload = () => {
                         URL.revokeObjectURL(url);
+                        image.style.display = "block"; // Show original image
 
                         // Send to server
                         const formData = new FormData();
@@ -73,12 +78,14 @@
                                 image.src = newUrl;
                                 image.onload = () => {
                                     URL.revokeObjectURL(newUrl);
+                                    image.style.display = "block"; // Show annotated image
+                                    status.textContent = "Imagem processada.";
                                 };
-                                status.textContent = "Image processed.";
                             })
                             .catch((err) => {
                                 status.textContent = "Error: " + err.message;
                                 console.error("Fetch error:", err);
+                                image.style.display = "none"; // Hide on error
                             });
                     };
                 }
