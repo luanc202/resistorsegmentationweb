@@ -30,44 +30,39 @@ interpreter_lock = threading.Lock()
 
 def preprocess_image(base64_data):
     """Decode and preprocess the base64 image for TF Lite."""
-    # Extract base64 string (skip "data:image/jpeg;base64," prefix)
     base64_string = base64_data.split(",")[1]
     img_data = base64.b64decode(base64_string)
 
-    # Decode to OpenCV image
     nparr = np.frombuffer(img_data, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         print("Failed to decode image")
         return None
 
-    # Resize to 640x640
     img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
-
-    # Convert BGR to RGB and normalize to [0, 1]
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     img = img.astype(np.float32) / 255.0
-
-    # Add batch dimension [1, 640, 640, 3]
     img = np.expand_dims(img, axis=0)
     return img
 
 def post_process(output_data, threshold=0.5):
-    """Process TF Lite output to extract detections."""
+    """Process TF Lite output to extract detections with scaled coordinates."""
     detections = []
-    # Assuming output is [1, num_detections, 6] (x, y, w, h, conf, class)
-    output = output_data[0]  # First output tensor
+    output = output_data[0]
 
     for detection in output:
         confidence = detection[4]
         if confidence > threshold:
             x, y, w, h = detection[0], detection[1], detection[2], detection[3]
             class_id = int(detection[5])
-
+            # Scale normalized coordinates to image size (640x640)
+            x_center = float(x) * IMG_SIZE
+            y_center = float(y) * IMG_SIZE
+            width = float(w) * IMG_SIZE
+            height = float(h) * IMG_SIZE
             # Convert center coordinates to top-left (x, y, width, height)
-            box = [x - w / 2, y - h / 2, w, h]
+            box = [x_center - width / 2, y_center - height / 2, width, height]
             label = LABELS[class_id]
-
             detections.append({"box": box, "label": label})
 
     return detections
@@ -80,33 +75,22 @@ def handle_connect():
 def handle_disconnect():
     print("Client disconnected")
 
-@socketio.on("frame")
-def handle_frame(data):
-    frame_id = data["id"]
+@socketio.on("image")
+def handle_image(data):
     base64_data = data["data"]
 
-    # Preprocess the image
     img = preprocess_image(base64_data)
     if img is None:
         socketio.emit("error", {"message": "Failed to process image"})
         return
 
-    # Use lock to ensure thread-safe access to the interpreter
     with interpreter_lock:
-        # Set input tensor
         interpreter.set_tensor(input_details[0]["index"], img)
-
-        # Run inference
         interpreter.invoke()
-
-        # Get output
         output_data = interpreter.get_tensor(output_details[0]["index"])
-
-        # Post-process detections
         detections = post_process(output_data)
 
-        # Send response
-        response = {"id": frame_id, "detections": detections}
+        response = {"detections": detections}
         socketio.emit("detection", response)
 
 if __name__ == "__main__":
