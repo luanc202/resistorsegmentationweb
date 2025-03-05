@@ -2,8 +2,7 @@ import base64
 import json
 import numpy as np
 import cv2
-from flask import Flask, send_from_directory
-from flask_socketio import SocketIO
+from flask import Flask, send_from_directory, request, jsonify
 from tflite_runtime.interpreter import Interpreter
 import threading
 import os
@@ -22,27 +21,48 @@ LABELS = [
 IMG_SIZE = 640
 
 app = Flask(__name__, static_folder='static', static_url_path='')
-socketio = SocketIO(app, cors_allowed_origins="*")
 
+# Load TF Lite model
 interpreter = Interpreter(model_path="best_float32.tflite")
 interpreter.allocate_tensors()
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
+# Lock for thread-safe model access
 interpreter_lock = threading.Lock()
 
 @app.route('/')
 def serve_html():
     return send_from_directory(app.static_folder, 'main.html')
 
-def preprocess_image(base64_data):
-    base64_string = base64_data.split(",")[1]
-    img_data = base64.b64decode(base64_string)
+@app.route('/detect', methods=['POST'])
+def detect():
+    if 'image' not in request.files:
+        return jsonify({"error": "No image provided"}), 400
+
+    file = request.files['image']
+    img_data = file.read()
     nparr = np.frombuffer(img_data, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
     if img is None:
         logger.error("Failed to decode image")
-        return None
+        return jsonify({"error": "Failed to process image"}), 400
+
+    # Preprocess image
+    img = preprocess_image(img)
+
+    # Run inference
+    with interpreter_lock:
+        interpreter.set_tensor(input_details[0]["index"], img)
+        interpreter.invoke()
+        output_data = interpreter.get_tensor(output_details[0]["index"])
+        detections = post_process(output_data)
+
+    return jsonify({"detections": detections})
+
+def preprocess_image(img):
+    """Preprocess the image for TF Lite model."""
     img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     img = img.astype(np.float32) / 255.0
@@ -50,6 +70,7 @@ def preprocess_image(base64_data):
     return img
 
 def post_process(output_data, threshold=0.5):
+    """Process TF Lite output to extract detections."""
     detections = []
     output = output_data[0]
     logger.info(f"Raw model output shape: {output.shape}")
@@ -71,30 +92,7 @@ def post_process(output_data, threshold=0.5):
             detections.append({"box": box, "label": LABELS[class_id]})
     return detections
 
-@socketio.on("connect")
-def handle_connect():
-    logger.info("Client connected")
-
-@socketio.on("disconnect")
-def handle_disconnect():
-    logger.info("Client disconnected")
-
-@socketio.on("image")
-def handle_image(data):
-    base64_data = data["data"]
-    img = preprocess_image(base64_data)
-    if img is None:
-        socketio.emit("error", {"message": "Failed to process image"})
-        return
-    with interpreter_lock:
-        interpreter.set_tensor(input_details[0]["index"], img)
-        interpreter.invoke()
-        output_data = interpreter.get_tensor(output_details[0]["index"])
-        detections = post_process(output_data)
-        response = {"detections": detections}
-        socketio.emit("detection", response)
-
 if __name__ == "__main__":
     print("Starting server on port 5000...")
     ssl_context = ('192.168.15.14.pem', '192.168.15.14-key.pem')
-    socketio.run(app, host="0.0.0.0", port=5000, debug=False, ssl_context=ssl_context)
+    app.run(host="0.0.0.0", port=5000, debug=False, ssl_context=ssl_context)
