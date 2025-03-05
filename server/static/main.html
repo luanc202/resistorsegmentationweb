@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Single Image Object Detection</title>
+        <style>
+            body {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                font-family: Arial, sans-serif;
+            }
+            #imageContainer {
+                position: relative;
+                width: 100%;
+                max-width: 640px;
+            }
+            #image {
+                width: 100%;
+                height: auto;
+            }
+            #overlay {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                pointer-events: none;
+            }
+            #status {
+                margin-top: 10px;
+                font-size: 16px;
+            }
+            button {
+                margin-top: 10px;
+                padding: 10px 20px;
+                font-size: 16px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Single Image Object Detection</h1>
+        <button id="captureBtn">Capture Image</button>
+        <div id="imageContainer">
+            <img id="image" src="" alt="Captured Image" style="display: none" />
+            <canvas id="overlay"></canvas>
+        </div>
+        <p id="status">Connecting to server...</p>
+
+        <!-- Include Socket.IO client library -->
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+        <script>
+            // WebSocket connection to the server
+            const socket = io(
+                window.location.protocol + "//" + window.location.host,
+            );
+
+            // DOM elements
+            const captureBtn = document.getElementById("captureBtn");
+            const image = document.getElementById("image");
+            const overlay = document.getElementById("overlay");
+            const status = document.getElementById("status");
+            const ctx = overlay.getContext("2d");
+
+            // Temporary canvas for capturing image
+            const tempCanvas = document.createElement("canvas");
+            const tempCtx = tempCanvas.getContext("2d");
+
+            const colorMap = {
+                black_belt: "black",
+                blue_belt: "blue",
+                brown_belt: "brown",
+                gold_belt: "gold",
+                gray_belt: "gray",
+                green_belt: "green",
+                orange_belt: "orange",
+                purple_belt: "purple",
+                red_belt: "red",
+                resistor: "#d2b48c", // Light brown (tan) for resistor
+                white_belt: "white",
+                yellow_belt: "yellow",
+            };
+
+            // Set canvas size to match image
+            function resizeCanvas() {
+                overlay.width = image.width;
+                overlay.height = image.height;
+                console.log(
+                    `Canvas resized to ${overlay.width}x${overlay.height}`,
+                );
+            }
+
+            // Access the camera and capture a single image
+            async function captureImage() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: "environment" },
+                    });
+                    const video = document.createElement("video");
+                    video.srcObject = stream;
+                    video.play();
+
+                    video.onloadedmetadata = () => {
+                        tempCanvas.width = video.videoWidth;
+                        tempCanvas.height = video.videoHeight;
+                        tempCtx.drawImage(
+                            video,
+                            0,
+                            0,
+                            video.videoWidth,
+                            video.videoHeight,
+                        );
+                        const imageData = tempCanvas.toDataURL(
+                            "image/jpeg",
+                            0.8,
+                        );
+
+                        // Display the captured image
+                        image.src = imageData;
+                        image.style.display = "block";
+                        resizeCanvas();
+
+                        // Send to server
+                        socket.emit("image", { data: imageData });
+                        console.log("Sent captured image to server");
+
+                        // Stop the stream
+                        stream.getTracks().forEach((track) => track.stop());
+                    };
+                } catch (err) {
+                    status.textContent =
+                        "Error accessing camera: " + err.message;
+                    console.error("Camera error:", err);
+                }
+            }
+
+            // WebSocket event handlers
+            socket.on("connect", () => {
+                status.textContent =
+                    "Connected to server. Ready to capture image.";
+                console.log("Connected to server");
+            });
+
+            socket.on("disconnect", () => {
+                status.textContent = "Disconnected from server.";
+                console.log("Disconnected from server");
+            });
+
+            socket.on("detection", (data) => {
+                console.log("Received detection data:", JSON.stringify(data));
+                ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+                if (data.detections) {
+                    console.log(
+                        `Processing ${data.detections.length} detections`,
+                    );
+                    data.detections.forEach((det, index) => {
+                        const [x, y, width, height] = det.box;
+                        const label = det.label;
+                        const color = colorMap[label] || "red"; // Default to red if label not found
+
+                        console.log(
+                            `Detection ${index}: x=${x}, y=${y}, w=${width}, h=${height}, label=${label}, color=${color}`,
+                        );
+
+                        ctx.strokeStyle = color;
+                        ctx.lineWidth = 2;
+                        ctx.strokeRect(x, y, width, height);
+
+                        ctx.fillStyle = color;
+                        ctx.font = "16px Arial";
+                        ctx.fillText(label, x, y - 5);
+                    });
+                } else {
+                    console.warn("No valid detections in response");
+                }
+            });
+
+            socket.on("error", (err) => {
+                status.textContent = "Server error: " + err.message;
+                console.error("Server error:", err);
+            });
+
+            // Button click event
+            captureBtn.addEventListener("click", () => {
+                status.textContent = "Capturing image...";
+                captureImage();
+            });
+        </script>
+    </body>
+</html>
