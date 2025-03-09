@@ -9,9 +9,7 @@ WORKDIR /server
 
 COPY server/ .
 
-RUN pip install --user pipenv
-RUN pipenv install
-RUN pipenv shell
+RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 5000
 
