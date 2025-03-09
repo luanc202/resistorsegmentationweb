@@ -1,7 +1,9 @@
-import cv2
-from flask import Flask, send_from_directory, request, Response
-from ultralytics import YOLO
+from flask import Flask, send_from_directory, request, jsonify
 import numpy as np
+from io import BytesIO
+from PIL import Image
+import base64
+from ultralytics import YOLO
 import threading
 import os
 import logging
@@ -16,10 +18,24 @@ IMG_SIZE = 640
 app = Flask(__name__, static_folder='static', static_url_path='')
 
 # Load YOLO model
-model = YOLO("best.pt")
+try:
+    model = YOLO("best.pt")
+    logger.info("YOLO model loaded successfully!")
+except Exception as e:
+    logger.error(f"Error loading model: {str(e)}")
+    model = None
 
 # Lock for thread-safe model access
 model_lock = threading.Lock()
+
+def preprocess_image(image_data):
+    if 'data:image' in image_data:
+        image_data = image_data.split(',')[1]
+    image_bytes = base64.b64decode(image_data)
+    image = Image.open(BytesIO(image_bytes))
+    if image.size != (IMG_SIZE, IMG_SIZE):
+        image = image.resize((IMG_SIZE, IMG_SIZE))
+    return image
 
 @app.route('/')
 def serve_html():
@@ -27,29 +43,47 @@ def serve_html():
 
 @app.route('/detect', methods=['POST'])
 def detect():
-    if 'image' not in request.files:
-        return Response("No image provided", status=400)
-
-    file = request.files['image']
     try:
-        # Read and decode the image
-        file_bytes = file.read()
-        nparr = np.frombuffer(file_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is None:
-            raise ValueError("Failed to decode image")
+        data = request.get_json()
+        if not data or 'image' not in data:
+            return jsonify({"error": "No image data provided"}), 400
 
-        # Process with YOLO and get annotated image
+        image_data = data['image']
+        if not isinstance(image_data, str):
+            return jsonify({"error": "Invalid image data"}), 400
+
+        if model is None:
+            return jsonify({"error": "Model not loaded"}), 500
+
+        image = preprocess_image(image_data)
+
         with model_lock:
-            results = model.predict(source=img, imgsz=IMG_SIZE)
-            annotated_image = results[0].plot()
+            results = model.predict(source=image, imgsz=IMG_SIZE, conf=0.5, verbose=False)
 
-        # Encode to JPEG and send back
-        _, encoded_image = cv2.imencode('.jpg', annotated_image)
-        return Response(encoded_image.tobytes(), content_type='image/jpeg')
+        detections = []
+        result = results[0]
+        orig_width, orig_height = image.size
+
+        if result.boxes:
+            boxes = result.boxes.data.cpu().numpy()
+            for box in boxes:
+                x1, y1, x2, y2, conf, cls = box
+                label = result.names[int(cls)]
+                detections.append({
+                    "x": float(x1),
+                    "y": float(y1),
+                    "width": float(x2 - x1),
+                    "height": float(y2 - y1),
+                    "confidence": float(conf),
+                    "label": label
+                })
+
+        logger.info(f"Found {len(detections)} detections")
+        return jsonify({"detections": detections})
+
     except Exception as e:
-        logger.error(f"Error processing image: {str(e)}")
-        return Response(str(e), status=500)
+        logger.error(f"Error in detection: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     print("Starting server on port 5000...")

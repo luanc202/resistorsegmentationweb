@@ -3,93 +3,277 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Segmentador de Resistores e Faixas</title>
+        <title>Real-Time Object Detection</title>
         <style>
             body {
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                font-family: Arial, sans-serif;
+                margin: 0;
+                padding: 20px;
+                font-family: "Segoe UI", Arial, sans-serif;
+                background: #f5f5f5;
+                color: #333;
             }
-            #imageContainer {
+            .container {
+                max-width: 1280px;
+                margin: 0 auto;
+            }
+            header {
+                background: #2196f3;
+                color: white;
+                padding: 1rem;
+                text-align: center;
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            }
+            h1 {
+                margin: 0;
+                font-size: 1.8rem;
+            }
+            #videoContainer {
                 position: relative;
                 width: 100%;
                 max-width: 640px;
+                margin: 20px auto;
+                background: #000;
+                border-radius: 10px;
+                overflow: hidden;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             }
-            #image {
+            #video {
                 width: 100%;
                 height: auto;
-                display: none; /* Initially hidden */
+                display: block;
+            }
+            #overlay {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                pointer-events: none;
             }
             #status {
-                margin-top: 10px;
+                background: white;
+                padding: 15px;
+                border-radius: 8px;
+                margin: 20px 0;
+                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
                 font-size: 16px;
             }
-            input[type="file"] {
+            .stats {
+                display: flex;
+                justify-content: space-around;
                 margin-top: 10px;
-                padding: 10px 20px;
-                font-size: 16px;
+                font-size: 0.9rem;
+            }
+            .stat-item {
+                text-align: center;
+            }
+            .stat-value {
+                font-size: 1.2rem;
+                font-weight: bold;
+                color: #2196f3;
             }
         </style>
     </head>
     <body>
-        <h1>Segmentador de Resistores e Faixas</h1>
-        <input
-            type="file"
-            id="imageInput"
-            accept="image/*"
-            capture="environment"
-        />
-        <div id="imageContainer">
-            <img id="image" src="" alt="Imagem anotada" />
+        <header>
+            <h1>
+                Detecção em Tempo Real de Resistores e Faixas de Resistência
+            </h1>
+        </header>
+        <div class="container">
+            <div id="videoContainer">
+                <video id="video" autoplay playsinline></video>
+                <canvas id="overlay"></canvas>
+            </div>
+            <div id="status">
+                <div>
+                    Status: <span id="statusText">Iniciando a câmera...</span>
+                </div>
+                <div class="stats">
+                    <div class="stat-item">
+                        <div class="stat-value" id="fpsValue">0</div>
+                        <div>FPS</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="detectionCount">0</div>
+                        <div>Detecções</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="processingTime">0</div>
+                        <div>ms/frame</div>
+                    </div>
+                </div>
+            </div>
         </div>
-        <p id="status">Pronto para tirar foto.</p>
 
         <script>
-            const imageInput = document.getElementById("imageInput");
-            const image = document.getElementById("image");
-            const status = document.getElementById("status");
+            const video = document.getElementById("video");
+            const overlay = document.getElementById("overlay");
+            const ctx = overlay.getContext("2d");
+            const statusText = document.getElementById("statusText");
+            const fpsValue = document.getElementById("fpsValue");
+            const detectionCount = document.getElementById("detectionCount");
+            const processingTime = document.getElementById("processingTime");
 
-            imageInput.addEventListener("change", () => {
-                if (imageInput.files && imageInput.files[0]) {
-                    status.textContent = "Processing image...";
-                    const file = imageInput.files[0];
+            let lastFrameTime = 0;
 
-                    // Hide the image initially
-                    image.style.display = "none";
-
-                    // Display the original image temporarily
-                    const url = URL.createObjectURL(file);
-                    image.src = url;
-                    image.onload = () => {
-                        URL.revokeObjectURL(url);
-                        image.style.display = "block"; // Show original image
-
-                        // Send to server
-                        const formData = new FormData();
-                        formData.append("image", file);
-                        fetch("/detect", {
-                            method: "POST",
-                            body: formData,
-                        })
-                            .then((response) => response.blob())
-                            .then((blob) => {
-                                const newUrl = URL.createObjectURL(blob);
-                                image.src = newUrl;
-                                image.onload = () => {
-                                    URL.revokeObjectURL(newUrl);
-                                    image.style.display = "block"; // Show annotated image
-                                    status.textContent = "Imagem processada.";
-                                };
-                            })
-                            .catch((err) => {
-                                status.textContent = "Error: " + err.message;
-                                console.error("Fetch error:", err);
-                                image.style.display = "none"; // Hide on error
-                            });
-                    };
+            class CircularBuffer {
+                constructor(size) {
+                    this.size = size;
+                    this.buffer = new Array(size).fill(0);
+                    this.index = 0;
+                    this.sum = 0;
+                    this.count = 0;
                 }
-            });
+                push(value) {
+                    this.sum -= this.buffer[this.index];
+                    this.buffer[this.index] = value;
+                    this.sum += value;
+                    this.index = (this.index + 1) % this.size;
+                    this.count = Math.min(this.count + 1, this.size);
+                }
+                average() {
+                    return this.count > 0 ? this.sum / this.count : 0;
+                }
+            }
+
+            const fpsBuffer = new CircularBuffer(30);
+            const processingBuffer = new CircularBuffer(30);
+
+            const tempCanvas = document.createElement("canvas");
+            tempCanvas.width = 640;
+            tempCanvas.height = 640;
+            const tempCtx = tempCanvas.getContext("2d");
+
+            const colorMap = {
+                black_belt: "black",
+                blue_belt: "blue",
+                brown_belt: "brown",
+                gold_belt: "gold",
+                gray_belt: "gray",
+                green_belt: "green",
+                orange_belt: "orange",
+                purple_belt: "purple",
+                red_belt: "red",
+                resistor: "#d2b48c",
+                white_belt: "white",
+                yellow_belt: "yellow",
+            };
+
+            async function preprocessImage() {
+                tempCtx.drawImage(video, 0, 0, 640, 640);
+                return tempCanvas.toDataURL("image/jpeg", 0.8);
+            }
+
+            async function detectObjects(imageData) {
+                try {
+                    const response = await fetch("/detect", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ image: imageData }),
+                    });
+                    if (!response.ok)
+                        throw new Error(`HTTP error: ${response.status}`);
+                    const result = await response.json();
+                    return result.detections || [];
+                } catch (error) {
+                    console.error("Detection error:", error);
+                    return [];
+                }
+            }
+
+            function drawDetections(detections) {
+                ctx.clearRect(0, 0, overlay.width, overlay.height);
+                detectionCount.textContent = detections.length;
+
+                const scaleX = overlay.width / 640;
+                const scaleY = overlay.height / 640;
+
+                detections.forEach((det) => {
+                    const x = det.x * scaleX;
+                    const y = det.y * scaleY;
+                    const width = det.width * scaleX;
+                    const height = det.height * scaleY;
+                    const label = det.label;
+                    const color = colorMap[label] || "red";
+
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(x, y, width, height);
+
+                    ctx.fillStyle = color;
+                    ctx.font = "16px Arial";
+                    ctx.fillText(label, x, y - 5);
+                });
+            }
+
+            async function processFrame(now) {
+                try {
+                    if (
+                        overlay.width !== video.videoWidth ||
+                        overlay.height !== video.videoHeight
+                    ) {
+                        overlay.width = video.videoWidth;
+                        overlay.height = video.videoHeight;
+                    }
+
+                    const imageData = await preprocessImage();
+                    const startTime = performance.now();
+                    const detections = await detectObjects(imageData);
+                    const endTime = performance.now();
+
+                    processingBuffer.push(endTime - startTime);
+                    processingTime.textContent = Math.round(
+                        processingBuffer.average(),
+                    );
+
+                    if (lastFrameTime) {
+                        const fps = 1000 / (now - lastFrameTime);
+                        fpsBuffer.push(fps);
+                        fpsValue.textContent = Math.round(fpsBuffer.average());
+                    }
+                    lastFrameTime = now;
+
+                    // Always clear the canvas and update detection count
+                    ctx.clearRect(0, 0, overlay.width, overlay.height);
+                    detectionCount.textContent = detections.length;
+
+                    // Draw detections only if there are any
+                    if (detections.length > 0) {
+                        drawDetections(detections);
+                    }
+
+                    statusText.textContent = "Detectando...";
+                } catch (error) {
+                    console.error("Processing error:", error);
+                    statusText.textContent = "Error: " + error.message;
+                }
+
+                if (video.srcObject) {
+                    video.requestVideoFrameCallback(processFrame);
+                }
+            }
+
+            async function setupCamera() {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: "environment" },
+                    });
+                    video.srcObject = stream;
+                    video.onloadedmetadata = () => {
+                        overlay.width = video.videoWidth;
+                        overlay.height = video.videoHeight;
+                        video.requestVideoFrameCallback(processFrame);
+                        statusText.textContent = "Camera started";
+                    };
+                } catch (err) {
+                    statusText.textContent =
+                        "Error starting camera: " + err.message;
+                    console.error("Camera error:", err);
+                }
+            }
+
+            setupCamera();
         </script>
     </body>
 </html>
