@@ -87,5 +87,5 @@ def detect():
 
 if __name__ == "__main__":
     print("Starting server on port 5000...")
-    ssl_context = ('192.168.15.14.pem', '192.168.15.14-key.pem')
-    app.run(host="0.0.0.0", port=5000, debug=False, ssl_context=ssl_context)
+    # ssl_context = ('192.168.15.14.pem', '192.168.15.14-key.pem')
+    app.run(host="0.0.0.0", port=5000, debug=False)
